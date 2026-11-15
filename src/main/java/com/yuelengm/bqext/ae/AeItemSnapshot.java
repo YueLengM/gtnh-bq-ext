@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 
 import appeng.api.storage.data.IAEItemStack;
 
@@ -15,6 +16,7 @@ final class AeItemSnapshot {
 
     private final List<IAEItemStack> items;
     private final Map<Item, List<IAEItemStack>> byItem = new IdentityHashMap<>();
+    private final Map<IAEItemStack, ItemStack> comparisonStacks = new IdentityHashMap<>();
 
     AeItemSnapshot(List<IAEItemStack> items) {
         this.items = Collections.unmodifiableList(new ArrayList<>(items));
@@ -29,5 +31,10 @@ final class AeItemSnapshot {
         // Ore matches may use a different Item. Keep their original traversal order.
         if (matchOreDictionary) return items;
         return byItem.getOrDefault(item, Collections.emptyList());
+    }
+
+    /** Read-only matching sample, discarded with this snapshot on the next tick or after extraction. */
+    ItemStack getComparisonStack(IAEItemStack stack) {
+        return comparisonStacks.computeIfAbsent(stack, IAEItemStack::getItemStack);
     }
 }

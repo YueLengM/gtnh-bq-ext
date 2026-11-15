@@ -148,7 +148,8 @@ public final class AeRetrievalDetector {
             !StringUtils.isNullOrEmpty(requirement.getOreDict()))) {
             if (remaining <= 0) break;
             AvailableItem candidate = available.items.computeIfAbsent(stack, AvailableItem::new);
-            if (candidate.remaining <= 0 || !matchesItem(task, requirement, candidate.stack)) continue;
+            if (candidate.remaining <= 0
+                || !matchesItem(task, requirement, available.snapshot.getComparisonStack(candidate.stack))) continue;
 
             long amount = Math.min(remaining, candidate.remaining);
             extraction.add(new ItemExtraction(candidate.stack.copy(), amount));
@@ -171,8 +172,7 @@ public final class AeRetrievalDetector {
         progress[index] = Math.min(required, progress[index] + amount);
     }
 
-    static boolean matchesItem(TaskRetrieval task, BigItemStack requirement, IAEItemStack candidate) {
-        ItemStack sample = candidate.getItemStack();
+    private static boolean matchesItem(TaskRetrieval task, BigItemStack requirement, ItemStack sample) {
         return ItemComparison.StackMatch(requirement.getBaseStack(), sample, !task.ignoreNBT, task.partialMatch)
             || ItemComparison.OreDictionaryMatch(
                 requirement.getOreIngredient(),
