@@ -47,7 +47,7 @@ public final class AeCheckScheduler {
 
     public static void tick() {
         currentTick++;
-        AeStorageSnapshotCache.clear();
+        AeStorageSnapshotCache.tick();
         if (pending.isEmpty()) return;
 
         long startedAt = System.nanoTime();

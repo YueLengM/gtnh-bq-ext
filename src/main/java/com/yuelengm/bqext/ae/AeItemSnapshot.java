@@ -33,7 +33,7 @@ final class AeItemSnapshot {
         return byItem.getOrDefault(item, Collections.emptyList());
     }
 
-    /** Read-only matching sample, discarded with this snapshot on the next tick. */
+    /** Read-only matching sample, discarded when this snapshot expires. */
     ItemStack getComparisonStack(IAEItemStack stack) {
         return comparisonStacks.computeIfAbsent(stack, IAEItemStack::getItemStack);
     }
