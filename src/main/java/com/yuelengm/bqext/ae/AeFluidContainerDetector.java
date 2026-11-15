@@ -56,39 +56,14 @@ public final class AeFluidContainerDetector {
 
     private static int[] planPartialItemsWithFluids(TaskRetrieval task, FluidRequirement[] fluidRequirements,
         AeItemSnapshot itemSnapshot, List<IAEFluidStack> fluidSnapshot, int[] initialProgress) {
-        AeRetrievalDetector.AvailableItems availableItems = AeRetrievalDetector.createAvailableItems(itemSnapshot);
         int[] progress = initialProgress.clone();
-
-        if (task.requireOnlyOneItem) {
-            for (int i = 0; i < task.requiredItems.size(); i++) {
-                BigItemStack requirement = task.requiredItems.get(i);
-                long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
-                if (remaining <= 0) continue;
-
-                AeRetrievalDetector.AvailableItems workingItems = AeRetrievalDetector
-                    .copyFreshAvailableItems(availableItems);
-                int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, workingItems);
-                AeRetrievalDetector.addProgress(task, progress, i, matchedItems);
-                remaining -= matchedItems;
-                if (remaining <= 0) continue;
-
-                FluidRequirement fluidRequirement = fluidRequirements[i];
-                if (fluidRequirement == null) continue;
-
-                FluidStack unitFluid = fluidRequirement.getUnitFluid();
-                long needed = unitFluid.amount * remaining;
-                long available = matchingFluidAmount(unitFluid, needed, fluidSnapshot);
-                AeRetrievalDetector.addProgress(task, progress, i, (int) (available / unitFluid.amount));
-            }
-            return progress;
-        }
 
         for (int i = 0; i < task.requiredItems.size(); i++) {
             BigItemStack requirement = task.requiredItems.get(i);
             long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
             if (remaining <= 0) continue;
 
-            int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, availableItems);
+            int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, itemSnapshot);
             AeRetrievalDetector.addProgress(task, progress, i, matchedItems);
             remaining -= matchedItems;
             if (remaining <= 0) continue;
