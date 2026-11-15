@@ -2,7 +2,7 @@ package com.yuelengm.bqext.ae;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -17,8 +17,11 @@ public final class AeCheckScheduler {
 
     private static final int DEBOUNCE_TICKS = 20;
     private static final int COOLDOWN_TICKS = 20;
+    private static final int MAX_CHECKS_PER_TICK = 16;
+    private static final long MAX_CHECK_TIME_NANOS = 2_000_000L;
 
-    private static final Map<CheckKey, PendingCheck> pending = new HashMap<>();
+    // Keep deferred checks ahead of new requests, including requests made while running a check.
+    private static final Map<CheckKey, PendingCheck> pending = new LinkedHashMap<>();
     private static final Map<CheckKey, Long> nextAllowed = new HashMap<>();
     private static long currentTick;
 
@@ -26,7 +29,7 @@ public final class AeCheckScheduler {
 
     public static boolean request(ITask task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest, CheckKind kind) {
         CheckKey key = new CheckKey(task, pInfo.UUID, quest.getKey(), kind);
-        if (task.isComplete(pInfo.UUID) || !AeTaskDetector.hasAnchors(pInfo)) {
+        if (consumesResources(task) || task.isComplete(pInfo.UUID) || !AeTaskDetector.hasAnchors(pInfo)) {
             pending.remove(key);
             nextAllowed.remove(key);
             return false;
@@ -44,35 +47,48 @@ public final class AeCheckScheduler {
 
     public static void tick() {
         currentTick++;
-        AeStorageSnapshotCache.clear();
+        AeStorageSnapshotCache.tick();
         if (pending.isEmpty()) return;
 
-        List<CheckKey> dueKeys = new ArrayList<>();
-        Map<CheckKey, PendingCheck> dueChecks = new HashMap<>();
-        Iterator<Map.Entry<CheckKey, PendingCheck>> iterator = pending.entrySet()
-            .iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<CheckKey, PendingCheck> entry = iterator.next();
-            Long allowedAt = nextAllowed.get(entry.getKey());
-            PendingCheck check = entry.getValue();
-            if (currentTick - check.lastRequestTick >= DEBOUNCE_TICKS
-                && (allowedAt == null || currentTick >= allowedAt)) {
+        long startedAt = System.nanoTime();
+        List<CheckKey> dueKeys = new ArrayList<>(MAX_CHECKS_PER_TICK);
+        for (Map.Entry<CheckKey, PendingCheck> entry : pending.entrySet()) {
+            if (isDue(entry.getKey(), entry.getValue())) {
                 dueKeys.add(entry.getKey());
-                dueChecks.put(entry.getKey(), check);
-                iterator.remove();
+                if (dueKeys.size() >= MAX_CHECKS_PER_TICK) break;
             }
         }
 
+        int executed = 0;
         for (CheckKey key : dueKeys) {
-            PendingCheck check = dueChecks.get(key);
-            if (check == null) continue;
+            // Always allow one check to make progress. A running check cannot be interrupted safely.
+            if (executed > 0 && System.nanoTime() - startedAt >= MAX_CHECK_TIME_NANOS) break;
+            PendingCheck check = pending.get(key);
+            // Earlier checks may have cancelled or refreshed a request in this batch.
+            if (check == null || !isDue(key, check)) continue;
 
+            pending.remove(key);
+            if (consumesResources(check.task) || check.task.isComplete(check.pInfo.UUID)) {
+                nextAllowed.remove(key);
+                continue;
+            }
             nextAllowed.put(key, currentTick + COOLDOWN_TICKS);
             run(check.task, check.pInfo, check.quest, check.kind);
+            executed++;
             if (check.task.isComplete(check.pInfo.UUID)) {
                 nextAllowed.remove(key);
             }
         }
+    }
+
+    private static boolean consumesResources(ITask task) {
+        return (task instanceof TaskRetrieval && ((TaskRetrieval) task).consume)
+            || (task instanceof TaskFluid && ((TaskFluid) task).consume);
+    }
+
+    private static boolean isDue(CheckKey key, PendingCheck check) {
+        Long allowedAt = nextAllowed.get(key);
+        return currentTick - check.lastRequestTick >= DEBOUNCE_TICKS && (allowedAt == null || currentTick >= allowedAt);
     }
 
     public static void clear() {

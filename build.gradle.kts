@@ -5,6 +5,10 @@ plugins {
     id("com.gtnewhorizons.gtnhconvention")
 }
 
+tasks.test {
+    useJUnit()
+}
+
 val guideResourcePackSources = layout.projectDirectory.dir("src/main/resources")
 
 tasks.withType<RunMinecraftTask>().configureEach {

@@ -35,7 +35,7 @@ public final class AeTaskDetector {
     }
 
     public static void detectItems(TaskRetrieval task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest) {
-        if (task.isComplete(pInfo.UUID)) return;
+        if (task.consume || task.isComplete(pInfo.UUID)) return;
 
         List<NetworkView> networks = resolveNetworks(pInfo);
         int[] initialProgress = task.getUsersProgress(pInfo.UUID)
@@ -44,12 +44,13 @@ public final class AeTaskDetector {
         AeRetrievalDetector.detect(task, pInfo, quest, networks, initialProgress);
         if (task.isComplete(pInfo.UUID)) return;
 
-        if (!task.consume && BqExtConfig.retrievalFluidCompat) {
+        if (BqExtConfig.retrievalFluidCompat) {
             AeFluidContainerDetector.detect(task, pInfo, quest, networks, initialProgress);
         }
     }
 
     public static void detectFluids(TaskFluid task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest) {
+        if (task.consume || task.isComplete(pInfo.UUID)) return;
         AeFluidDetector.detect(task, pInfo, quest, resolveNetworks(pInfo));
     }
 
@@ -70,7 +71,7 @@ public final class AeTaskDetector {
                 IStorageGrid storage = grid.getCache(IStorageGrid.class);
                 if (storage == null) continue;
 
-                networks.putIfAbsent(grid.getId(), new NetworkView(grid.getId(), bqInterface, storage));
+                networks.putIfAbsent(grid.getId(), new NetworkView(grid.getId(), storage));
             } catch (GridAccessException ignored) {}
         }
         return new ArrayList<>(networks.values());
@@ -132,12 +133,10 @@ public final class AeTaskDetector {
     static final class NetworkView {
 
         final UUID networkId;
-        final TileBqInterface bqInterface;
         final IStorageGrid storage;
 
-        private NetworkView(UUID networkId, TileBqInterface bqInterface, IStorageGrid storage) {
+        private NetworkView(UUID networkId, IStorageGrid storage) {
             this.networkId = networkId;
-            this.bqInterface = bqInterface;
             this.storage = storage;
         }
     }

@@ -1,6 +1,5 @@
 package com.yuelengm.bqext.ae;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -56,44 +55,17 @@ public final class AeFluidContainerDetector {
     }
 
     private static int[] planPartialItemsWithFluids(TaskRetrieval task, FluidRequirement[] fluidRequirements,
-        List<IAEItemStack> itemSnapshot, List<IAEFluidStack> fluidSnapshot, int[] initialProgress) {
-        List<AeRetrievalDetector.AvailableItem> availableItems = AeRetrievalDetector.createAvailableItems(itemSnapshot);
+        AeItemSnapshot itemSnapshot, List<IAEFluidStack> fluidSnapshot, int[] initialProgress) {
         int[] progress = initialProgress.clone();
-
-        if (task.requireOnlyOneItem) {
-            for (int i = 0; i < task.requiredItems.size(); i++) {
-                BigItemStack requirement = task.requiredItems.get(i);
-                long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
-                if (remaining <= 0) continue;
-
-                List<AeRetrievalDetector.AvailableItem> workingItems = AeRetrievalDetector
-                    .copyFreshAvailableItems(availableItems);
-                List<AeRetrievalDetector.ItemExtraction> extraction = new ArrayList<>();
-                remaining = AeRetrievalDetector
-                    .allocateItemRemaining(task, requirement, remaining, workingItems, extraction);
-                AeRetrievalDetector.addProgress(task, progress, i, AeRetrievalDetector.extractionAmount(extraction));
-                if (remaining <= 0) continue;
-
-                FluidRequirement fluidRequirement = fluidRequirements[i];
-                if (fluidRequirement == null) continue;
-
-                FluidStack unitFluid = fluidRequirement.getUnitFluid();
-                long needed = unitFluid.amount * remaining;
-                long available = matchingFluidAmount(unitFluid, needed, fluidSnapshot);
-                AeRetrievalDetector.addProgress(task, progress, i, (int) (available / unitFluid.amount));
-            }
-            return progress;
-        }
 
         for (int i = 0; i < task.requiredItems.size(); i++) {
             BigItemStack requirement = task.requiredItems.get(i);
             long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
             if (remaining <= 0) continue;
 
-            List<AeRetrievalDetector.ItemExtraction> extraction = new ArrayList<>();
-            remaining = AeRetrievalDetector
-                .allocateItemRemaining(task, requirement, remaining, availableItems, extraction);
-            AeRetrievalDetector.addProgress(task, progress, i, AeRetrievalDetector.extractionAmount(extraction));
+            int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, itemSnapshot);
+            AeRetrievalDetector.addProgress(task, progress, i, matchedItems);
+            remaining -= matchedItems;
             if (remaining <= 0) continue;
 
             FluidRequirement fluidRequirement = fluidRequirements[i];
