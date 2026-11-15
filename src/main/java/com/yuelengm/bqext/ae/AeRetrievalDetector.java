@@ -5,8 +5,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.StringUtils;
+import net.minecraftforge.oredict.OreDictionary;
 
 import com.yuelengm.bqext.ae.AeTaskDetector.NetworkView;
 
@@ -18,6 +20,20 @@ import betterquesting.api2.utils.ParticipantInfo;
 import bq_standard.tasks.TaskRetrieval;
 
 public final class AeRetrievalDetector {
+
+    private static final ClassValue<Boolean> USES_RAW_DAMAGE = new ClassValue<Boolean>() {
+
+        @Override
+        protected Boolean computeValue(Class<?> type) {
+            try {
+                // Forge-added method: its name is unchanged in obfuscated environments.
+                return type.getMethod("getDamage", ItemStack.class)
+                    .getDeclaringClass() == Item.class;
+            } catch (ReflectiveOperationException | SecurityException ignored) {
+                return false;
+            }
+        }
+    };
 
     private AeRetrievalDetector() {}
 
@@ -75,8 +91,8 @@ public final class AeRetrievalDetector {
             !StringUtils.isNullOrEmpty(requirement.getOreDict()))) {
             if (remaining <= 0) break;
             AvailableItem candidate = available.items.computeIfAbsent(stack, AvailableItem::new);
-            if (candidate.remaining <= 0
-                || !matchesItem(task, requirement, available.snapshot.getComparisonStack(candidate.stack))) continue;
+            if (candidate.remaining <= 0 || !matchesItem(task, requirement, candidate.stack, available.snapshot))
+                continue;
 
             long amount = Math.min(remaining, candidate.remaining);
             candidate.remaining -= amount;
@@ -90,7 +106,13 @@ public final class AeRetrievalDetector {
         progress[index] = Math.min(required, progress[index] + amount);
     }
 
-    private static boolean matchesItem(TaskRetrieval task, BigItemStack requirement, ItemStack sample) {
+    private static boolean matchesItem(TaskRetrieval task, BigItemStack requirement, IAEItemStack candidate,
+        AeItemSnapshot snapshot) {
+        if (task.ignoreNBT && StringUtils.isNullOrEmpty(requirement.getOreDict())) {
+            return matchesIgnoringNbt(requirement.getBaseStack(), candidate, snapshot);
+        }
+
+        ItemStack sample = snapshot.getComparisonStack(candidate);
         return ItemComparison.StackMatch(requirement.getBaseStack(), sample, !task.ignoreNBT, task.partialMatch)
             || ItemComparison.OreDictionaryMatch(
                 requirement.getOreIngredient(),
@@ -98,6 +120,21 @@ public final class AeRetrievalDetector {
                 sample,
                 !task.ignoreNBT,
                 task.partialMatch);
+    }
+
+    static boolean matchesIgnoringNbt(ItemStack requirement, IAEItemStack candidate, AeItemSnapshot snapshot) {
+        Item item = requirement.getItem();
+        if (item != candidate.getItem()) return false;
+
+        int damage = requirement.getItemDamage();
+        if (item.isDamageable() || damage == OreDictionary.WILDCARD_VALUE) return true;
+        if (USES_RAW_DAMAGE.get(item.getClass())) {
+            // AE's getItemStack() uses the ItemStack constructor, which clamps negative damage to zero.
+            return damage == Math.max(0, candidate.getItemDamage());
+        }
+
+        // Custom getDamage() implementations may derive metadata from NBT instead of the raw field AE stores.
+        return ItemComparison.StackMatch(requirement, snapshot.getComparisonStack(candidate), false, false);
     }
 
     static AvailableItems createAvailableItems(AeItemSnapshot snapshot) {
