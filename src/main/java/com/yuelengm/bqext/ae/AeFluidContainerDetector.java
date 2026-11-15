@@ -1,6 +1,5 @@
 package com.yuelengm.bqext.ae;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -68,10 +67,9 @@ public final class AeFluidContainerDetector {
 
                 AeRetrievalDetector.AvailableItems workingItems = AeRetrievalDetector
                     .copyFreshAvailableItems(availableItems);
-                List<AeRetrievalDetector.ItemExtraction> extraction = new ArrayList<>();
-                remaining = AeRetrievalDetector
-                    .allocateItemRemaining(task, requirement, remaining, workingItems, extraction);
-                AeRetrievalDetector.addProgress(task, progress, i, AeRetrievalDetector.extractionAmount(extraction));
+                int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, workingItems);
+                AeRetrievalDetector.addProgress(task, progress, i, matchedItems);
+                remaining -= matchedItems;
                 if (remaining <= 0) continue;
 
                 FluidRequirement fluidRequirement = fluidRequirements[i];
@@ -90,10 +88,9 @@ public final class AeFluidContainerDetector {
             long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
             if (remaining <= 0) continue;
 
-            List<AeRetrievalDetector.ItemExtraction> extraction = new ArrayList<>();
-            remaining = AeRetrievalDetector
-                .allocateItemRemaining(task, requirement, remaining, availableItems, extraction);
-            AeRetrievalDetector.addProgress(task, progress, i, AeRetrievalDetector.extractionAmount(extraction));
+            int matchedItems = AeRetrievalDetector.countItems(task, requirement, remaining, availableItems);
+            AeRetrievalDetector.addProgress(task, progress, i, matchedItems);
+            remaining -= matchedItems;
             if (remaining <= 0) continue;
 
             FluidRequirement fluidRequirement = fluidRequirements[i];

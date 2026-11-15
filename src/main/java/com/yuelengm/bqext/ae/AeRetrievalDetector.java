@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import javax.annotation.Nullable;
+
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.StringUtils;
@@ -116,9 +118,7 @@ public final class AeRetrievalDetector {
                 if (remaining <= 0) continue;
 
                 AvailableItems workingItems = copyFreshAvailableItems(availableItems);
-                List<ItemExtraction> extraction = new ArrayList<>();
-                allocateItemRemaining(task, requirement, remaining, workingItems, extraction);
-                addProgress(task, progress, i, extractionAmount(extraction));
+                addProgress(task, progress, i, countItems(task, requirement, remaining, workingItems));
             }
             return progress;
         }
@@ -128,9 +128,7 @@ public final class AeRetrievalDetector {
             long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
             if (remaining <= 0) continue;
 
-            List<ItemExtraction> extraction = new ArrayList<>();
-            allocateItemRemaining(task, requirement, remaining, availableItems, extraction);
-            addProgress(task, progress, i, extractionAmount(extraction));
+            addProgress(task, progress, i, countItems(task, requirement, remaining, availableItems));
         }
         return progress;
     }
@@ -140,8 +138,14 @@ public final class AeRetrievalDetector {
         return allocateItemRemaining(task, requirement, remaining, available, extraction) <= 0;
     }
 
-    static long allocateItemRemaining(TaskRetrieval task, BigItemStack requirement, long remaining,
-        AvailableItems available, List<ItemExtraction> extraction) {
+    /** Counts and reserves items within this plan without constructing an extraction plan. */
+    static int countItems(TaskRetrieval task, BigItemStack requirement, long requested, AvailableItems available) {
+        long remaining = allocateItemRemaining(task, requirement, requested, available, null);
+        return (int) Math.min(Integer.MAX_VALUE, requested - remaining);
+    }
+
+    private static long allocateItemRemaining(TaskRetrieval task, BigItemStack requirement, long remaining,
+        AvailableItems available, @Nullable List<ItemExtraction> extraction) {
         for (IAEItemStack stack : available.snapshot.getCandidates(
             requirement.getBaseStack()
                 .getItem(),
@@ -152,19 +156,11 @@ public final class AeRetrievalDetector {
                 || !matchesItem(task, requirement, available.snapshot.getComparisonStack(candidate.stack))) continue;
 
             long amount = Math.min(remaining, candidate.remaining);
-            extraction.add(new ItemExtraction(candidate.stack.copy(), amount));
+            if (extraction != null) extraction.add(new ItemExtraction(candidate.stack.copy(), amount));
             candidate.remaining -= amount;
             remaining -= amount;
         }
         return remaining;
-    }
-
-    static int extractionAmount(List<ItemExtraction> extraction) {
-        long amount = 0;
-        for (ItemExtraction item : extraction) {
-            amount += item.amount;
-        }
-        return (int) Math.min(Integer.MAX_VALUE, amount);
     }
 
     static void addProgress(TaskRetrieval task, int[] progress, int index, int amount) {
