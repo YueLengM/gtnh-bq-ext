@@ -15,15 +15,15 @@ import appeng.api.storage.data.IAEItemStack;
 
 final class AeStorageSnapshotCache {
 
-    private static final Map<UUID, List<IAEItemStack>> itemSnapshots = new HashMap<>();
+    private static final Map<UUID, AeItemSnapshot> itemSnapshots = new HashMap<>();
     private static final Map<UUID, List<IAEFluidStack>> fluidSnapshots = new HashMap<>();
 
     private AeStorageSnapshotCache() {}
 
-    static List<IAEItemStack> getItemSnapshot(NetworkView network) {
-        List<IAEItemStack> snapshot = itemSnapshots.get(network.networkId);
+    static AeItemSnapshot getItemSnapshot(NetworkView network) {
+        AeItemSnapshot snapshot = itemSnapshots.get(network.networkId);
         if (snapshot == null) {
-            snapshot = captureItems(network.storage.getItemInventory());
+            snapshot = new AeItemSnapshot(captureItems(network.storage.getItemInventory()));
             itemSnapshots.put(network.networkId, snapshot);
         }
         return snapshot;

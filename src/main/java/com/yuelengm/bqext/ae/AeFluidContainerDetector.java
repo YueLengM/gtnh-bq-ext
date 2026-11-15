@@ -56,8 +56,8 @@ public final class AeFluidContainerDetector {
     }
 
     private static int[] planPartialItemsWithFluids(TaskRetrieval task, FluidRequirement[] fluidRequirements,
-        List<IAEItemStack> itemSnapshot, List<IAEFluidStack> fluidSnapshot, int[] initialProgress) {
-        List<AeRetrievalDetector.AvailableItem> availableItems = AeRetrievalDetector.createAvailableItems(itemSnapshot);
+        AeItemSnapshot itemSnapshot, List<IAEFluidStack> fluidSnapshot, int[] initialProgress) {
+        AeRetrievalDetector.AvailableItems availableItems = AeRetrievalDetector.createAvailableItems(itemSnapshot);
         int[] progress = initialProgress.clone();
 
         if (task.requireOnlyOneItem) {
@@ -66,7 +66,7 @@ public final class AeFluidContainerDetector {
                 long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
                 if (remaining <= 0) continue;
 
-                List<AeRetrievalDetector.AvailableItem> workingItems = AeRetrievalDetector
+                AeRetrievalDetector.AvailableItems workingItems = AeRetrievalDetector
                     .copyFreshAvailableItems(availableItems);
                 List<AeRetrievalDetector.ItemExtraction> extraction = new ArrayList<>();
                 remaining = AeRetrievalDetector

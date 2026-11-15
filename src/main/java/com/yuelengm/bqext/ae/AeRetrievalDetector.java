@@ -1,12 +1,14 @@
 package com.yuelengm.bqext.ae;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
+import net.minecraft.util.StringUtils;
 
 import com.yuelengm.bqext.BQExt;
 import com.yuelengm.bqext.ae.AeTaskDetector.NetworkView;
@@ -66,8 +68,8 @@ public final class AeRetrievalDetector {
         }
     }
 
-    private static ItemPlan planItems(TaskRetrieval task, List<IAEItemStack> snapshot, int[] progress) {
-        List<AvailableItem> available = createAvailableItems(snapshot);
+    private static ItemPlan planItems(TaskRetrieval task, AeItemSnapshot snapshot, int[] progress) {
+        AvailableItems available = createAvailableItems(snapshot);
         if (task.requiredItems.isEmpty()) {
             return task.requireOnlyOneItem ? null : new ItemPlan(new ArrayList<>(), progress.clone());
         }
@@ -80,7 +82,7 @@ public final class AeRetrievalDetector {
                 completedProgress[i] = requirement.stackSize;
                 if (remaining <= 0) return new ItemPlan(new ArrayList<>(), completedProgress);
 
-                List<AvailableItem> working = copyFreshAvailableItems(available);
+                AvailableItems working = copyFreshAvailableItems(available);
                 List<ItemExtraction> extraction = new ArrayList<>();
                 if (allocateItem(task, requirement, remaining, working, extraction)) {
                     return new ItemPlan(extraction, completedProgress);
@@ -103,8 +105,8 @@ public final class AeRetrievalDetector {
         return new ItemPlan(extraction, completedProgress);
     }
 
-    private static int[] planPartialItems(TaskRetrieval task, List<IAEItemStack> snapshot, int[] initialProgress) {
-        List<AvailableItem> availableItems = createAvailableItems(snapshot);
+    private static int[] planPartialItems(TaskRetrieval task, AeItemSnapshot snapshot, int[] initialProgress) {
+        AvailableItems availableItems = createAvailableItems(snapshot);
         int[] progress = initialProgress.clone();
 
         if (task.requireOnlyOneItem) {
@@ -113,7 +115,7 @@ public final class AeRetrievalDetector {
                 long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
                 if (remaining <= 0) continue;
 
-                List<AvailableItem> workingItems = copyFreshAvailableItems(availableItems);
+                AvailableItems workingItems = copyFreshAvailableItems(availableItems);
                 List<ItemExtraction> extraction = new ArrayList<>();
                 allocateItemRemaining(task, requirement, remaining, workingItems, extraction);
                 addProgress(task, progress, i, extractionAmount(extraction));
@@ -134,14 +136,18 @@ public final class AeRetrievalDetector {
     }
 
     private static boolean allocateItem(TaskRetrieval task, BigItemStack requirement, long remaining,
-        List<AvailableItem> available, List<ItemExtraction> extraction) {
+        AvailableItems available, List<ItemExtraction> extraction) {
         return allocateItemRemaining(task, requirement, remaining, available, extraction) <= 0;
     }
 
     static long allocateItemRemaining(TaskRetrieval task, BigItemStack requirement, long remaining,
-        List<AvailableItem> available, List<ItemExtraction> extraction) {
-        for (AvailableItem candidate : available) {
+        AvailableItems available, List<ItemExtraction> extraction) {
+        for (IAEItemStack stack : available.snapshot.getCandidates(
+            requirement.getBaseStack()
+                .getItem(),
+            !StringUtils.isNullOrEmpty(requirement.getOreDict()))) {
             if (remaining <= 0) break;
+            AvailableItem candidate = available.items.computeIfAbsent(stack, AvailableItem::new);
             if (candidate.remaining <= 0 || !matchesItem(task, requirement, candidate.stack)) continue;
 
             long amount = Math.min(remaining, candidate.remaining);
@@ -176,20 +182,12 @@ public final class AeRetrievalDetector {
                 task.partialMatch);
     }
 
-    static List<AvailableItem> createAvailableItems(List<IAEItemStack> snapshot) {
-        List<AvailableItem> available = new ArrayList<>(snapshot.size());
-        for (IAEItemStack stack : snapshot) {
-            if (stack != null && stack.getStackSize() > 0) available.add(new AvailableItem(stack));
-        }
-        return available;
+    static AvailableItems createAvailableItems(AeItemSnapshot snapshot) {
+        return new AvailableItems(snapshot);
     }
 
-    static List<AvailableItem> copyFreshAvailableItems(List<AvailableItem> source) {
-        List<AvailableItem> available = new ArrayList<>(source.size());
-        for (AvailableItem item : source) {
-            available.add(new AvailableItem(item.stack));
-        }
-        return available;
+    static AvailableItems copyFreshAvailableItems(AvailableItems source) {
+        return new AvailableItems(source.snapshot);
     }
 
     private static boolean consumeItems(NetworkView network, IMEMonitor<IAEItemStack> inventory,
@@ -214,7 +212,18 @@ public final class AeRetrievalDetector {
         return true;
     }
 
-    static final class AvailableItem {
+    static final class AvailableItems {
+
+        private final AeItemSnapshot snapshot;
+        // Each plan owns its counts, including fresh alternatives for requireOnlyOneItem.
+        private final Map<IAEItemStack, AvailableItem> items = new IdentityHashMap<>();
+
+        private AvailableItems(AeItemSnapshot snapshot) {
+            this.snapshot = snapshot;
+        }
+    }
+
+    private static final class AvailableItem {
 
         final IAEItemStack stack;
         long remaining;

@@ -73,4 +73,13 @@ dependencies {
     clientOnlyNonPublishable("com.github.GTNewHorizons:GuideNH:1.3.55:dev")
 
     implementation("org.jetbrains:annotations:23.0.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("com.github.GTNewHorizons:Applied-Energistics-2-Unofficial:rv3-beta-1095-GTNH:dev") {
+        transitive = false
+    }
+    // AE stack interfaces reference client classes even when tests only use item identities.
+    testRuntimeOnly("org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209") {
+        transitive = false
+    }
 }
