@@ -29,7 +29,7 @@ public final class AeCheckScheduler {
 
     public static boolean request(ITask task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest, CheckKind kind) {
         CheckKey key = new CheckKey(task, pInfo.UUID, quest.getKey(), kind);
-        if (task.isComplete(pInfo.UUID) || !AeTaskDetector.hasAnchors(pInfo)) {
+        if (consumesResources(task) || task.isComplete(pInfo.UUID) || !AeTaskDetector.hasAnchors(pInfo)) {
             pending.remove(key);
             nextAllowed.remove(key);
             return false;
@@ -68,7 +68,7 @@ public final class AeCheckScheduler {
             if (check == null || !isDue(key, check)) continue;
 
             pending.remove(key);
-            if (check.task.isComplete(check.pInfo.UUID)) {
+            if (consumesResources(check.task) || check.task.isComplete(check.pInfo.UUID)) {
                 nextAllowed.remove(key);
                 continue;
             }
@@ -79,6 +79,11 @@ public final class AeCheckScheduler {
                 nextAllowed.remove(key);
             }
         }
+    }
+
+    private static boolean consumesResources(ITask task) {
+        return (task instanceof TaskRetrieval && ((TaskRetrieval) task).consume)
+            || (task instanceof TaskFluid && ((TaskFluid) task).consume);
     }
 
     private static boolean isDue(CheckKey key, PendingCheck check) {

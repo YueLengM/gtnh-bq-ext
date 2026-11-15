@@ -38,14 +38,6 @@ final class AeStorageSnapshotCache {
         return snapshot;
     }
 
-    static void invalidateItems(NetworkView network) {
-        itemSnapshots.remove(network.networkId);
-    }
-
-    static void invalidateFluids(NetworkView network) {
-        fluidSnapshots.remove(network.networkId);
-    }
-
     static void clear() {
         itemSnapshots.clear();
         fluidSnapshots.clear();

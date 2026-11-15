@@ -1,24 +1,15 @@
 package com.yuelengm.bqext.ae;
 
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import javax.annotation.Nullable;
-
-import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.StringUtils;
 
-import com.yuelengm.bqext.BQExt;
 import com.yuelengm.bqext.ae.AeTaskDetector.NetworkView;
 
-import appeng.api.config.Actionable;
-import appeng.api.networking.security.BaseActionSource;
-import appeng.api.networking.security.PlayerSource;
-import appeng.api.storage.IMEMonitor;
 import appeng.api.storage.data.IAEItemStack;
 import betterquesting.api.questing.IQuest;
 import betterquesting.api.utils.BigItemStack;
@@ -32,10 +23,7 @@ public final class AeRetrievalDetector {
 
     static void detect(TaskRetrieval task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest,
         List<NetworkView> networks, int[] initialProgress) {
-        if (task.consume) {
-            detectConsumable(task, pInfo, quest, networks, initialProgress);
-            return;
-        }
+        if (task.consume || task.isComplete(pInfo.UUID)) return;
 
         int[] bestProgress = initialProgress;
         for (NetworkView network : networks) {
@@ -50,61 +38,6 @@ public final class AeRetrievalDetector {
         }
 
         AeTaskDetector.applyPartialProgress(task, pInfo, quest, initialProgress, bestProgress);
-    }
-
-    private static void detectConsumable(TaskRetrieval task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest,
-        List<NetworkView> networks, int[] progress) {
-        for (NetworkView network : networks) {
-            if (network.storage == null) continue;
-            IMEMonitor<IAEItemStack> inventory = network.storage.getItemInventory();
-            if (inventory == null) continue;
-
-            ItemPlan plan = planItems(task, AeStorageSnapshotCache.getItemSnapshot(network), progress);
-            if (plan == null) continue;
-            boolean consumed = consumeItems(network, inventory, plan.extraction, pInfo.PLAYER);
-            AeStorageSnapshotCache.invalidateItems(network);
-            if (!consumed) continue;
-
-            AeTaskDetector.completeTask(task, pInfo, quest, plan.progress);
-            return;
-        }
-    }
-
-    private static ItemPlan planItems(TaskRetrieval task, AeItemSnapshot snapshot, int[] progress) {
-        AvailableItems available = createAvailableItems(snapshot);
-        if (task.requiredItems.isEmpty()) {
-            return task.requireOnlyOneItem ? null : new ItemPlan(new ArrayList<>(), progress.clone());
-        }
-
-        if (task.requireOnlyOneItem) {
-            for (int i = 0; i < task.requiredItems.size(); i++) {
-                BigItemStack requirement = task.requiredItems.get(i);
-                long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
-                int[] completedProgress = progress.clone();
-                completedProgress[i] = requirement.stackSize;
-                if (remaining <= 0) return new ItemPlan(new ArrayList<>(), completedProgress);
-
-                AvailableItems working = copyFreshAvailableItems(available);
-                List<ItemExtraction> extraction = new ArrayList<>();
-                if (allocateItem(task, requirement, remaining, working, extraction)) {
-                    return new ItemPlan(extraction, completedProgress);
-                }
-            }
-            return null;
-        }
-
-        List<ItemExtraction> extraction = new ArrayList<>();
-        for (int i = 0; i < task.requiredItems.size(); i++) {
-            BigItemStack requirement = task.requiredItems.get(i);
-            long remaining = Math.max(0, requirement.stackSize - AeTaskDetector.getProgress(progress, i));
-            if (!allocateItem(task, requirement, remaining, available, extraction)) return null;
-        }
-
-        int[] completedProgress = progress.clone();
-        for (int i = 0; i < task.requiredItems.size(); i++) {
-            completedProgress[i] = task.requiredItems.get(i).stackSize;
-        }
-        return new ItemPlan(extraction, completedProgress);
     }
 
     private static int[] planPartialItems(TaskRetrieval task, AeItemSnapshot snapshot, int[] initialProgress) {
@@ -133,19 +66,9 @@ public final class AeRetrievalDetector {
         return progress;
     }
 
-    private static boolean allocateItem(TaskRetrieval task, BigItemStack requirement, long remaining,
-        AvailableItems available, List<ItemExtraction> extraction) {
-        return allocateItemRemaining(task, requirement, remaining, available, extraction) <= 0;
-    }
-
-    /** Counts and reserves items within this plan without constructing an extraction plan. */
+    /** Reserves counts only in this check's working inventory; never removes items from AE. */
     static int countItems(TaskRetrieval task, BigItemStack requirement, long requested, AvailableItems available) {
-        long remaining = allocateItemRemaining(task, requirement, requested, available, null);
-        return (int) Math.min(Integer.MAX_VALUE, requested - remaining);
-    }
-
-    private static long allocateItemRemaining(TaskRetrieval task, BigItemStack requirement, long remaining,
-        AvailableItems available, @Nullable List<ItemExtraction> extraction) {
+        long remaining = requested;
         for (IAEItemStack stack : available.snapshot.getCandidates(
             requirement.getBaseStack()
                 .getItem(),
@@ -156,11 +79,10 @@ public final class AeRetrievalDetector {
                 || !matchesItem(task, requirement, available.snapshot.getComparisonStack(candidate.stack))) continue;
 
             long amount = Math.min(remaining, candidate.remaining);
-            if (extraction != null) extraction.add(new ItemExtraction(candidate.stack.copy(), amount));
             candidate.remaining -= amount;
             remaining -= amount;
         }
-        return remaining;
+        return (int) Math.min(Integer.MAX_VALUE, requested - remaining);
     }
 
     static void addProgress(TaskRetrieval task, int[] progress, int index, int amount) {
@@ -186,28 +108,6 @@ public final class AeRetrievalDetector {
         return new AvailableItems(source.snapshot);
     }
 
-    private static boolean consumeItems(NetworkView network, IMEMonitor<IAEItemStack> inventory,
-        List<ItemExtraction> extraction, EntityPlayer player) {
-        BaseActionSource source = new PlayerSource(player, network.bqInterface);
-        for (ItemExtraction plan : extraction) {
-            IAEItemStack request = plan.stack.copy();
-            request.setStackSize(plan.amount);
-            IAEItemStack result = inventory.extractItems(request, Actionable.SIMULATE, source);
-            if (result == null || result.getStackSize() < plan.amount) return false;
-        }
-
-        for (ItemExtraction plan : extraction) {
-            IAEItemStack request = plan.stack.copy();
-            request.setStackSize(plan.amount);
-            IAEItemStack result = inventory.extractItems(request, Actionable.MODULATE, source);
-            if (result == null || result.getStackSize() < plan.amount) {
-                BQExt.LOG.error("AE item extraction rejected after simulation for {}", request);
-                return false;
-            }
-        }
-        return true;
-    }
-
     static final class AvailableItems {
 
         private final AeItemSnapshot snapshot;
@@ -230,25 +130,4 @@ public final class AeRetrievalDetector {
         }
     }
 
-    static final class ItemExtraction {
-
-        final IAEItemStack stack;
-        final long amount;
-
-        private ItemExtraction(IAEItemStack stack, long amount) {
-            this.stack = stack;
-            this.amount = amount;
-        }
-    }
-
-    private static final class ItemPlan {
-
-        private final List<ItemExtraction> extraction;
-        private final int[] progress;
-
-        private ItemPlan(List<ItemExtraction> extraction, int[] progress) {
-            this.extraction = extraction;
-            this.progress = progress;
-        }
-    }
 }
