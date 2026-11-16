@@ -20,20 +20,6 @@ import bq_standard.tasks.TaskRetrieval;
 
 public final class AeRetrievalDetector {
 
-    private static final ClassValue<Boolean> USES_RAW_DAMAGE = new ClassValue<Boolean>() {
-
-        @Override
-        protected Boolean computeValue(Class<?> type) {
-            try {
-                // Forge-added method: its name is unchanged in obfuscated environments.
-                return type.getMethod("getDamage", ItemStack.class)
-                    .getDeclaringClass() == Item.class;
-            } catch (ReflectiveOperationException | SecurityException ignored) {
-                return false;
-            }
-        }
-    };
-
     private AeRetrievalDetector() {}
 
     static void detect(TaskRetrieval task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest,
@@ -92,7 +78,7 @@ public final class AeRetrievalDetector {
     private static boolean matchesItem(TaskRetrieval task, BigItemStack requirement, IAEItemStack candidate,
         AeItemSnapshot snapshot) {
         if (task.ignoreNBT && StringUtils.isNullOrEmpty(requirement.getOreDict())) {
-            return matchesIgnoringNbt(requirement.getBaseStack(), candidate, snapshot);
+            return matchesIgnoringNbt(requirement.getBaseStack(), candidate);
         }
 
         ItemStack sample = snapshot.getComparisonStack(candidate);
@@ -105,19 +91,14 @@ public final class AeRetrievalDetector {
                 task.partialMatch);
     }
 
-    static boolean matchesIgnoringNbt(ItemStack requirement, IAEItemStack candidate, AeItemSnapshot snapshot) {
+    static boolean matchesIgnoringNbt(ItemStack requirement, IAEItemStack candidate) {
         Item item = requirement.getItem();
         if (item != candidate.getItem()) return false;
 
         int damage = requirement.getItemDamage();
         if (item.isDamageable() || damage == OreDictionary.WILDCARD_VALUE) return true;
-        if (USES_RAW_DAMAGE.get(item.getClass())) {
-            // AE's getItemStack() uses the ItemStack constructor, which clamps negative damage to zero.
-            return damage == Math.max(0, candidate.getItemDamage());
-        }
-
-        // Custom getDamage() implementations may derive metadata from NBT instead of the raw field AE stores.
-        return ItemComparison.StackMatch(requirement, snapshot.getComparisonStack(candidate), false, false);
+        // Treat AE damage as equivalent to ItemStack damage; preserve constructor normalization.
+        return damage == Math.max(0, candidate.getItemDamage());
     }
 
 }
