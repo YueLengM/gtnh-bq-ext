@@ -99,20 +99,20 @@ public class AeCheckSchedulerErrorTest {
     public void rateLimitsReportsAndResetsOnServerClear() throws Exception {
         BooleanSupplier broken = () -> { throw new NoClassDefFoundError("test/client/Only"); };
         assertFalse(check(broken));
-        assertEquals(1200, state("nextFailureLogTick"));
+        assertEquals(200, state("nextFailureLogTick"));
         assertFalse(check(broken));
         assertEquals(1, state("suppressedFailures"));
-        for (int tick = 0; tick < 1199; tick++) AeCheckScheduler.tick();
+        for (int tick = 0; tick < 199; tick++) AeCheckScheduler.tick();
         assertFalse(check(broken));
         assertEquals(2, state("suppressedFailures"));
         AeCheckScheduler.tick();
         assertFalse(check(broken));
-        assertEquals(2400, state("nextFailureLogTick"));
+        assertEquals(400, state("nextFailureLogTick"));
         assertEquals(0, state("suppressedFailures"));
         AeCheckScheduler.clear();
         assertEquals(0, state("nextFailureLogTick"));
         assertFalse(check(broken));
-        assertEquals(1200, state("nextFailureLogTick"));
+        assertEquals(200, state("nextFailureLogTick"));
     }
 
     private static boolean check(BooleanSupplier action) {
