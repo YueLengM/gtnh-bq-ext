@@ -6,6 +6,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
+
+import com.yuelengm.bqext.BQExt;
 
 import betterquesting.api.questing.IQuest;
 import betterquesting.api.questing.tasks.ITask;
@@ -19,16 +22,26 @@ public final class AeCheckScheduler {
     private static final int COOLDOWN_TICKS = 20;
     private static final int MAX_CHECKS_PER_TICK = 16;
     private static final long MAX_CHECK_TIME_NANOS = 2_000_000L;
+    private static final int FAILURE_LOG_INTERVAL_TICKS = 10 * 20;
 
     // Keep deferred checks ahead of new requests, including requests made while running a check.
     private static final Map<CheckKey, PendingCheck> pending = new LinkedHashMap<>();
     private static final Map<CheckKey, Long> nextAllowed = new HashMap<>();
     private static long currentTick;
+    private static long nextFailureLogTick;
+    private static long suppressedFailures;
 
     private AeCheckScheduler() {}
 
     public static boolean request(ITask task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest, CheckKind kind) {
         CheckKey key = new CheckKey(task, pInfo.UUID, quest.getKey(), kind);
+        boolean accepted = executeSafely(() -> enqueue(task, pInfo, quest, kind, key), key.questId, key.playerId, kind);
+        if (!accepted) pending.remove(key);
+        return accepted;
+    }
+
+    private static boolean enqueue(ITask task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest, CheckKind kind,
+        CheckKey key) {
         if (consumesResources(task) || task.isComplete(pInfo.UUID) || !AeTaskDetector.hasAnchors(pInfo)) {
             pending.remove(key);
             nextAllowed.remove(key);
@@ -68,16 +81,41 @@ public final class AeCheckScheduler {
             if (check == null || !isDue(key, check)) continue;
 
             pending.remove(key);
-            if (consumesResources(check.task) || check.task.isComplete(check.pInfo.UUID)) {
-                nextAllowed.remove(key);
-                continue;
-            }
+            // Failed attempts also consume budget and cooldown; never retry them in this tick.
             nextAllowed.put(key, currentTick + COOLDOWN_TICKS);
-            run(check.task, check.pInfo, check.quest, check.kind);
             executed++;
-            if (check.task.isComplete(check.pInfo.UUID)) {
-                nextAllowed.remove(key);
+            executeSafely(() -> {
+                if (consumesResources(check.task) || check.task.isComplete(check.pInfo.UUID)) {
+                    nextAllowed.remove(key);
+                    return true;
+                }
+                run(check.task, check.pInfo, check.quest, check.kind);
+                if (check.task.isComplete(check.pInfo.UUID)) nextAllowed.remove(key);
+                return true;
+            }, key.questId, key.playerId, check.kind);
+        }
+    }
+
+    /** Isolate third-party callbacks per check, without swallowing fatal JVM errors. */
+    static boolean executeSafely(BooleanSupplier action, UUID questId, UUID playerId, CheckKind kind) {
+        try {
+            return action.getAsBoolean();
+        } catch (RuntimeException | LinkageError failure) {
+            if (currentTick >= nextFailureLogTick) {
+                nextFailureLogTick = currentTick + FAILURE_LOG_INTERVAL_TICKS;
+                // Do not format ItemStacks, item names or task objects here: they may call client-only code too.
+                BQExt.LOG.warn(
+                    "AE check aborted: kind={}, quest={}, player={}; suppressed failures since previous report={}",
+                    kind,
+                    questId,
+                    playerId,
+                    suppressedFailures,
+                    failure);
+                suppressedFailures = 0;
+            } else {
+                suppressedFailures++;
             }
+            return false;
         }
     }
 
@@ -96,6 +134,8 @@ public final class AeCheckScheduler {
         nextAllowed.clear();
         AeStorageSnapshotCache.clear();
         currentTick = 0;
+        nextFailureLogTick = 0;
+        suppressedFailures = 0;
     }
 
     private static void run(ITask task, ParticipantInfo pInfo, Map.Entry<UUID, IQuest> quest, CheckKind kind) {
