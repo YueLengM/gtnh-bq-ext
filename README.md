@@ -7,6 +7,7 @@ BetterQuesting 增强。
 ## 下载
 | GTNH  | Download                                                                                                                           |
 |-------|------------------------------------------------------------------------------------------------------------------------------------|
+| 2.9.1 | [![Latest](https://img.shields.io/github/v/release/YueLengM/gtnh-bq-ext)](https://github.com/YueLengM/gtnh-bq-ext/releases/latest) |
 | 2.9.0 | [![Latest](https://img.shields.io/github/v/release/YueLengM/gtnh-bq-ext)](https://github.com/YueLengM/gtnh-bq-ext/releases/latest) |
 
 > [!WARNING]
