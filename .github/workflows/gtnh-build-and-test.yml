@@ -66,17 +66,29 @@ on:
         required: false
         default: false
         type: boolean
+      gradle-args:
+        description: 'Additional arguments passed to every Gradle invocation'
+        required: false
+        default: ''
+        type: string
+      artifact-suffix:
+        description: 'Suffix used to keep matrix artifacts and concurrency groups distinct'
+        required: false
+        default: ''
+        type: string
 
 env:
   ARTIFACT_RETENTION_DAYS: ${{ github.event.repository.private && 5 || 30 }}
   HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  RFG_CACHE_KEY: rfg-v1-
+  RFG_CACHE_KEY: rfg-v1-${{ inputs.artifact-suffix }}-
+  GRADLE_ARGS: ${{ inputs.gradle-args }}
+  ARTIFACT_SUFFIX: ${{ inputs.artifact-suffix }}
   RFG_CACHE_PATHS: |
     build/rfg/srg_merged_minecraft.jar
     build/rfg/*_patched_minecraft-sources.jar*
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.artifact-suffix }}
   cancel-in-progress: true
 
 jobs:
@@ -95,8 +107,9 @@ jobs:
       - name: Checkout workflows repo
         uses: actions/checkout@v5
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          repository: GTNewHorizons/GTNH-Actions-Workflows
+          # Keep this pinned ref in sync with the official workflow revision.
+          ref: 6e85640042e246a63f97dc2dd67993740014a3d8
           path: .gtnh-workflows
           fetch-depth: 0
       - name: Keep the workflow's own files out of git status
@@ -176,7 +189,7 @@ jobs:
           restore-keys: ${{ env.RFG_CACHE_KEY }}
 
       - name: Setup the workspace
-        run: ./gradlew --build-cache --info --stacktrace ${{ inputs.workspace }}
+        run: ./gradlew --build-cache --info --stacktrace ${GRADLE_ARGS} ${{ inputs.workspace }}
 
       # Keyed on RFG's own input digests, so a stale restore reruns the chain and is saved under a new key
       - name: Key the RetroFuturaGradle outputs
@@ -192,11 +205,11 @@ jobs:
           key: ${{ steps.rfg-key.outputs.key }}
 
       - name: Compile the mod
-        run: ./gradlew --build-cache --info --stacktrace assemble
+        run: ./gradlew --build-cache --info --stacktrace ${GRADLE_ARGS} assemble
 
       - name: Run post-build checks
         id: build_mod
-        run: xvfb-run --server-args="-screen 0 1366x768x24" ./gradlew --build-cache --info --stacktrace build
+        run: xvfb-run --server-args="-screen 0 1366x768x24" ./gradlew --build-cache --info --stacktrace ${GRADLE_ARGS} build
 
       - name: Summarize test results
         id: test_results
@@ -204,13 +217,24 @@ jobs:
         continue-on-error: true
         run: python3 .gtnh-workflows/scripts/test_results.py render
 
+      - name: Prepare test report artifact
+        id: test_report_file
+        if: ${{ !cancelled() && steps.test_results.outputs.report != '' }}
+        shell: bash
+        run: |
+          report="${{ steps.test_results.outputs.report }}"
+          mkdir -p build/test-report-artifacts
+          report_path="build/test-report-artifacts/${ARTIFACT_SUFFIX:-default}-$(basename "${report}")"
+          cp "${report}" "${report_path}"
+          echo "path=${report_path}" >> "$GITHUB_OUTPUT"
+
       - name: Attach test report
         id: test_report
         if: ${{ !cancelled() && steps.test_results.outputs.report != '' }}
         uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
-          path: ${{ steps.test_results.outputs.report }}
+          path: ${{ steps.test_report_file.outputs.path }}
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           archive: false
 
@@ -231,7 +255,7 @@ jobs:
         uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
-          name: ${{ github.repository_id }}-reports
+          name: ${{ github.repository_id }}-reports-${{ inputs.artifact-suffix }}
           path: |
             **/build/reports/
             **/build/test-results/**/*.xml
@@ -270,7 +294,12 @@ jobs:
           echo "level-seed=-6202107849386030209\nonline-mode=true\n" > run/server.properties
           echo "level-seed=-6202107849386030209\nonline-mode=true\n" > run/server/server.properties
 
-          gradle_args=(--build-cache --info --stacktrace runServer)
+          gradle_args=(--build-cache --info --stacktrace)
+          if [[ -n "${GRADLE_ARGS}" ]]; then
+            read -r -a extra_gradle_args <<< "${GRADLE_ARGS}"
+            gradle_args+=("${extra_gradle_args[@]}")
+          fi
+          gradle_args+=(runServer)
 
           if [[ "${HORIZONQA}" == "true" ]]; then
             horizonqa_jvm_args=(
@@ -303,7 +332,7 @@ jobs:
         uses: actions/upload-artifact@v7
         continue-on-error: true
         with:
-          name: ${{ github.repository_id }}-horizonqa
+          name: ${{ github.repository_id }}-horizonqa-${{ inputs.artifact-suffix }}
           path: build/horizonqa/
           retention-days: 90
 
@@ -355,7 +384,7 @@ jobs:
         if: ${{ !github.event.repository.private }}
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.repository_id }}-build-libs
+          name: ${{ github.repository_id }}-build-libs-${{ inputs.artifact-suffix }}
           path: build/libs/
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
@@ -364,6 +393,8 @@ jobs:
         shell: bash
         run: |
           mapfile -t files < <(find build/libs -maxdepth 1 -type f -name '*.jar' | sort)
+          artifact_dir=build/individual-artifacts
+          mkdir -p "${artifact_dir}"
 
           if (( ${#files[@]} > 10 )); then
             echo "::warning::Found ${#files[@]} files in build/libs, but only the first 10 will be uploaded individually."
@@ -371,7 +402,9 @@ jobs:
 
           for i in {0..9}; do
             if [[ -n "${files[$i]:-}" ]]; then
-              echo "file_${i}=${files[$i]}" >> "$GITHUB_OUTPUT"
+              artifact_path="${artifact_dir}/${ARTIFACT_SUFFIX:-default}-${i}-$(basename "${files[$i]}")"
+              cp "${files[$i]}" "${artifact_path}"
+              echo "file_${i}=${artifact_path}" >> "$GITHUB_OUTPUT"
             fi
           done
 

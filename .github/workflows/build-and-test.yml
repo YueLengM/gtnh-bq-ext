@@ -12,10 +12,6 @@ permissions:
   pull-requests: write
   statuses: write
 
-env:
-  # Update this ref when GTNewHorizons/GTNH-Actions-Workflows changes.
-  GTNH_WORKFLOWS_REF: 6e85640042e246a63f97dc2dd67993740014a3d8
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -45,43 +41,15 @@ jobs:
           ' gtnh-test-versions.json)
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
 
-  prepare-workflows:
-    name: Prepare GTNH workflow scripts
-    runs-on: ubuntu-26.04
-    steps:
-      - name: Checkout official GTNH workflow scripts
-        uses: actions/checkout@v5
-        with:
-          repository: GTNewHorizons/GTNH-Actions-Workflows
-          ref: ${{ env.GTNH_WORKFLOWS_REF }}
-          path: .gtnh-workflows
-          fetch-depth: 1
-
-      - name: Verify official workflow script version
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git -C .gtnh-workflows rev-parse HEAD)" = "${GTNH_WORKFLOWS_REF}"
-          test -f .gtnh-workflows/scripts/upload-deps-to-localmaven.sh
-          test -f .gtnh-workflows/scripts/test_results.py
-          test -f .gtnh-workflows/scripts/summarize_horizonqa_result
-          test -f .gtnh-workflows/scripts/test_no_error_reports
-          test -f .gtnh-workflows/scripts/test_horizonqa_result
-
-      - name: Upload official GTNH workflow scripts
-        uses: actions/upload-artifact@v7
-        with:
-          name: gtnh-workflows
-          path: .gtnh-workflows/
-
   build-and-test:
     name: GTNH ${{ matrix.gtnh }}
-    needs: [ read-versions, prepare-workflows ]
+    needs: read-versions
     strategy:
       fail-fast: false
       matrix:
         gtnh: ${{ fromJSON(needs.read-versions.outputs.versions) }}
     uses: ./.github/workflows/gtnh-build-and-test.yml
     with:
-      gtnh-version: ${{ matrix.gtnh }}
+      gradle-args: "-Pelytra.manifest.version=${{ matrix.gtnh }}"
+      artifact-suffix: gtnh${{ matrix.gtnh }}
     secrets: inherit
