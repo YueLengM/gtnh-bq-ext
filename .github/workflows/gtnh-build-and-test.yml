@@ -402,7 +402,11 @@ jobs:
 
           for i in {0..9}; do
             if [[ -n "${files[$i]:-}" ]]; then
-              artifact_path="${artifact_dir}/${ARTIFACT_SUFFIX:-default}-${i}-$(basename "${files[$i]}")"
+              filename="$(basename "${files[$i]}")"
+              if [[ -n "${ARTIFACT_SUFFIX}" ]]; then
+                filename="${filename%.jar}-${ARTIFACT_SUFFIX}.jar"
+              fi
+              artifact_path="${artifact_dir}/${filename}"
               cp "${files[$i]}" "${artifact_path}"
               echo "file_${i}=${artifact_path}" >> "$GITHUB_OUTPUT"
             fi
