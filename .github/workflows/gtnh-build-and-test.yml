@@ -1,5 +1,4 @@
 # Reusable GTNH test flow for version matrices.
-# Update GTNH_WORKFLOWS_REF when GTNewHorizons/GTNH-Actions-Workflows changes.
 name: GTNH build and test
 
 on:
@@ -66,8 +65,6 @@ on:
         type: boolean
 
 env:
-  # This ref is intentionally pinned. Update it when the official flow changes.
-  GTNH_WORKFLOWS_REF: 6e85640042e246a63f97dc2dd67993740014a3d8
   ARTIFACT_RETENTION_DAYS: ${{ github.event.repository.private && 5 || 30 }}
   HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
   GTNH_VERSION: ${{ inputs.gtnh-version }}
@@ -97,13 +94,11 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Checkout official GTNH workflow scripts
-        uses: actions/checkout@v5
+      - name: Download official GTNH workflow scripts
+        uses: actions/download-artifact@v8
         with:
-          repository: GTNewHorizons/GTNH-Actions-Workflows
-          ref: ${{ env.GTNH_WORKFLOWS_REF }}
           path: .gtnh-workflows
-          fetch-depth: 1
+          name: gtnh-workflows
 
       - name: Keep workflow files out of git status
         run: printf '%s\n' /.gtnh-workflows/ /server.log >> .git/info/exclude
@@ -354,8 +349,13 @@ jobs:
         shell: bash
         run: |
           mapfile -t files < <(find build/libs -maxdepth 1 -type f -name '*.jar' | sort)
+          if (( ${#files[@]} > 10 )); then
+            echo "::warning::Found ${#files[@]} files in build/libs, but only the first 10 will be uploaded individually."
+          fi
           for i in {0..9}; do
-            [[ -n "${files[${i}]:-}" ]] && echo "file_${i}=${files[${i}]}" >> "$GITHUB_OUTPUT"
+            if [[ -n "${files[${i}]:-}" ]]; then
+              echo "file_${i}=${files[${i}]}" >> "$GITHUB_OUTPUT"
+            fi
           done
 
       - name: Upload individual compilation artifact 1
@@ -364,5 +364,86 @@ jobs:
         with:
           name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-1
           path: ${{ steps.find-artifacts.outputs.file_0 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 2
+        if: ${{ steps.find-artifacts.outputs.file_1 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-2
+          path: ${{ steps.find-artifacts.outputs.file_1 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 3
+        if: ${{ steps.find-artifacts.outputs.file_2 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-3
+          path: ${{ steps.find-artifacts.outputs.file_2 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 4
+        if: ${{ steps.find-artifacts.outputs.file_3 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-4
+          path: ${{ steps.find-artifacts.outputs.file_3 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 5
+        if: ${{ steps.find-artifacts.outputs.file_4 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-5
+          path: ${{ steps.find-artifacts.outputs.file_4 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 6
+        if: ${{ steps.find-artifacts.outputs.file_5 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-6
+          path: ${{ steps.find-artifacts.outputs.file_5 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 7
+        if: ${{ steps.find-artifacts.outputs.file_6 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-7
+          path: ${{ steps.find-artifacts.outputs.file_6 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 8
+        if: ${{ steps.find-artifacts.outputs.file_7 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-8
+          path: ${{ steps.find-artifacts.outputs.file_7 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 9
+        if: ${{ steps.find-artifacts.outputs.file_8 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-9
+          path: ${{ steps.find-artifacts.outputs.file_8 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Upload individual compilation artifact 10
+        if: ${{ steps.find-artifacts.outputs.file_9 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-10
+          path: ${{ steps.find-artifacts.outputs.file_9 }}
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           archive: false
