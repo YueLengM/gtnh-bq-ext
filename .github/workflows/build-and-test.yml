@@ -46,6 +46,7 @@ jobs:
     needs: read-versions
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         gtnh: ${{ fromJSON(needs.read-versions.outputs.versions) }}
     uses: ./.github/workflows/gtnh-build-and-test.yml
