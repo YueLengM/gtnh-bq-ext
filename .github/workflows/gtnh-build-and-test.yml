@@ -1,0 +1,368 @@
+# Reusable GTNH test flow for version matrices.
+# Update GTNH_WORKFLOWS_REF when GTNewHorizons/GTNH-Actions-Workflows changes.
+name: GTNH build and test
+
+on:
+  workflow_call:
+    inputs:
+      gtnh-version:
+        description: GTNH manifest version selected by the caller matrix
+        required: true
+        type: string
+      timeout:
+        description: Timeout for runServer in seconds
+        required: false
+        default: 90
+        type: number
+      workspace:
+        description: Gradle workspace setup task
+        required: false
+        default: setupCIWorkspace
+        type: string
+      client-only:
+        description: Skip the server run and server log checks
+        required: false
+        default: false
+        type: boolean
+      disable-server-auto-stop:
+        description: Do not automatically stop runServer
+        required: false
+        default: false
+        type: boolean
+      disable-test-comment:
+        description: Do not update the per-version pull request test comment
+        required: false
+        default: false
+        type: boolean
+      horizonqa:
+        description: Run Horizon-QA in CI mode during runServer
+        required: false
+        default: false
+        type: boolean
+      horizonqa-tests:
+        description: Optional Horizon-QA test selector
+        required: false
+        default: ''
+        type: string
+      horizonqa-allow-no-tests:
+        description: Allow Horizon-QA to pass with no discovered tests
+        required: false
+        default: false
+        type: boolean
+      external-deps-inclusion:
+        description: Install external dependency artifacts from the triggering run
+        required: false
+        default: false
+        type: boolean
+      java-distribution:
+        description: JDK distribution
+        required: false
+        default: temurin
+        type: string
+      cache-rfg:
+        description: Cache RetroFuturaGradle decompile outputs for this GTNH version
+        required: false
+        default: false
+        type: boolean
+
+env:
+  # This ref is intentionally pinned. Update it when the official flow changes.
+  GTNH_WORKFLOWS_REF: 6e85640042e246a63f97dc2dd67993740014a3d8
+  ARTIFACT_RETENTION_DAYS: ${{ github.event.repository.private && 5 || 30 }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  GTNH_VERSION: ${{ inputs.gtnh-version }}
+  GTNH_PROPERTY: -Pelytra.manifest.version=${{ inputs.gtnh-version }}
+  RFG_CACHE_KEY: rfg-v1-${{ inputs.gtnh-version }}-
+  RFG_CACHE_PATHS: |
+    build/rfg/srg_merged_minecraft.jar
+    build/rfg/*_patched_minecraft-sources.jar*
+
+concurrency:
+  group: ${{ github.workflow }}-gtnh-${{ inputs.gtnh-version }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mesa-utils xvfb x11-xserver-utils
+
+      - name: Checkout mod repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout official GTNH workflow scripts
+        uses: actions/checkout@v5
+        with:
+          repository: GTNewHorizons/GTNH-Actions-Workflows
+          ref: ${{ env.GTNH_WORKFLOWS_REF }}
+          path: .gtnh-workflows
+          fetch-depth: 1
+
+      - name: Keep workflow files out of git status
+        run: printf '%s\n' /.gtnh-workflows/ /server.log >> .git/info/exclude
+
+      - name: Find external dependency artifact
+        id: find-artifact
+        if: ${{ inputs.external-deps-inclusion }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=external-deps-${{ github.run_id }}" --jq '.artifacts[0].workflow_run.id // empty')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download external dependencies
+        if: ${{ inputs.external-deps-inclusion && steps.find-artifact.outputs.run_id != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: external-deps-${{ github.run_id }}
+          path: ./.packscripts/
+          run-id: ${{ steps.find-artifact.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install external dependencies
+        if: ${{ inputs.external-deps-inclusion && hashFiles('./.packscripts/**') != '' }}
+        run: |
+          bash .gtnh-workflows/scripts/upload-deps-to-localmaven.sh ./.packscripts/required_prs.json
+
+      - name: Determine JDK versions
+        id: list-jdk-versions
+        shell: bash
+        run: |
+          (
+            echo 'java-versions<<EOF'
+            echo 8
+            echo 17
+            echo 21
+            if [[ -f gradle/gradle-daemon-jvm.properties ]]; then
+              yq -pprops -oprops '.toolchainVersion' gradle/gradle-daemon-jvm.properties
+            fi
+            echo EOF
+          ) >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK versions
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ steps.list-jdk-versions.outputs.java-versions }}
+          distribution: ${{ inputs.java-distribution }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          build-scan-publish: true
+          build-scan-terms-of-use-url: https://gradle.com/terms-of-service
+          build-scan-terms-of-use-agree: 'yes'
+          validate-wrappers: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Restore RetroFuturaGradle outputs
+        id: rfg-restore
+        if: ${{ inputs.cache-rfg }}
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.RFG_CACHE_PATHS }}
+          key: ${{ env.RFG_CACHE_KEY }}
+          restore-keys: ${{ env.RFG_CACHE_KEY }}
+
+      - name: Set up the workspace
+        run: ./gradlew --build-cache --no-configuration-cache --info --stacktrace "${{ env.GTNH_PROPERTY }}" "${{ inputs.workspace }}"
+
+      - name: Key RetroFuturaGradle outputs
+        id: rfg-key
+        if: ${{ inputs.cache-rfg }}
+        run: echo "key=${{ env.RFG_CACHE_KEY }}${{ hashFiles('build/rfg/*.inputs.sha256') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Save RetroFuturaGradle outputs
+        if: ${{ steps.rfg-key.outputs.key != env.RFG_CACHE_KEY && steps.rfg-key.outputs.key != steps.rfg-restore.outputs.cache-matched-key }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.RFG_CACHE_PATHS }}
+          key: ${{ steps.rfg-key.outputs.key }}
+
+      - name: Compile the mod
+        run: ./gradlew --build-cache --no-configuration-cache --info --stacktrace "${{ env.GTNH_PROPERTY }}" assemble
+
+      - name: Run post-build checks
+        id: build_mod
+        run: xvfb-run --server-args='-screen 0 1366x768x24' ./gradlew --build-cache --no-configuration-cache --info --stacktrace "${{ env.GTNH_PROPERTY }}" build
+
+      - name: Namespace test result status for this GTNH version
+        if: ${{ !cancelled() && steps.build_mod.conclusion != 'skipped' }}
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          path = Path('.gtnh-workflows/scripts/test_results.py')
+          text = path.read_text()
+          version = os.environ['GTNH_VERSION']
+          text = text.replace("STATUS_CONTEXT = 'Tests'", f"STATUS_CONTEXT = 'Tests / GTNH {version}'")
+          text = text.replace("MARKER = '<!-- gtnh-test-results -->'", f"MARKER = '<!-- gtnh-test-results-{version} -->'")
+          path.write_text(text)
+          PY
+
+      - name: Summarize test results
+        id: test_results
+        if: ${{ !cancelled() && steps.build_mod.conclusion != 'skipped' }}
+        continue-on-error: true
+        run: python3 .gtnh-workflows/scripts/test_results.py render
+
+      - name: Attach test report
+        id: test_report
+        if: ${{ !cancelled() && steps.test_results.outputs.report != '' }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: ${{ github.repository_id }}-test-report-gtnh-${{ inputs.gtnh-version }}
+          path: ${{ steps.test_results.outputs.report }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
+
+      - name: Publish test results
+        if: ${{ !cancelled() && steps.test_results.outputs.report != '' }}
+        continue-on-error: true
+        run: python3 .gtnh-workflows/scripts/test_results.py publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CAN_PUBLISH: ${{ !github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPORT_URL: ${{ steps.test_report.outputs.artifact-url }}
+          DISABLE_COMMENT: ${{ inputs.disable-test-comment }}
+
+      - name: Attach Gradle reports
+        if: failure() && steps.build_mod.conclusion == 'failure'
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: ${{ github.repository_id }}-reports-gtnh-${{ inputs.gtnh-version }}
+          path: |
+            **/build/reports/
+            **/build/test-results/**/*.xml
+            server.log
+            run/crash-reports/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Run server for up to ${{ inputs.timeout }} seconds
+        id: run_server
+        if: ${{ !inputs.client-only }}
+        shell: bash
+        env:
+          HORIZONQA: ${{ inputs.horizonqa }}
+          HORIZONQA_TESTS: ${{ inputs.horizonqa-tests }}
+          HORIZONQA_ALLOW_NO_TESTS: ${{ inputs.horizonqa-allow-no-tests }}
+          DISABLE_SERVER_AUTO_STOP: ${{ inputs.disable-server-auto-stop }}
+        run: |
+          mkdir -p run/server
+          echo 'eula=true' > run/eula.txt
+          echo 'eula=true' > run/server/eula.txt
+          printf '%s\n' 'level-seed=-6202107849386030209' 'online-mode=true' > run/server.properties
+          printf '%s\n' 'level-seed=-6202107849386030209' 'online-mode=true' > run/server/server.properties
+
+          gradle_args=(--build-cache --no-configuration-cache --info --stacktrace "${GTNH_PROPERTY}" runServer)
+          if [[ "${HORIZONQA}" == 'true' ]]; then
+            gradle_args+=(--mcJvmArgs='-Dhorizonqa.mode=ci' --mcJvmArgs="-Dhorizonqa.reportDir=${GITHUB_WORKSPACE}/build/horizonqa")
+            [[ -n "${HORIZONQA_TESTS}" ]] && gradle_args+=(--mcJvmArgs="-Dhorizonqa.tests=${HORIZONQA_TESTS}")
+            [[ "${HORIZONQA_ALLOW_NO_TESTS}" == 'true' ]] && gradle_args+=(--mcJvmArgs='-Dhorizonqa.allowNoTests=true')
+          fi
+
+          server_stdin=/dev/null
+          if [[ "${DISABLE_SERVER_AUTO_STOP}" != 'true' && "${HORIZONQA}" != 'true' ]]; then
+            echo stop > run/stop.txt
+            server_stdin=run/stop.txt
+          fi
+          timeout ${{ inputs.timeout }} ./gradlew "${gradle_args[@]}" 2>&1 < "${server_stdin}" | tee -a server.log || true
+
+      - name: Upload Horizon-QA reports
+        if: ${{ always() && !inputs.client-only && inputs.horizonqa && steps.run_server.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: ${{ github.repository_id }}-horizonqa-gtnh-${{ inputs.gtnh-version }}
+          path: build/horizonqa/
+          retention-days: 90
+
+      - name: Summarize Horizon-QA result
+        if: ${{ always() && !inputs.client-only && inputs.horizonqa && steps.run_server.conclusion != 'skipped' }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          chmod +x .gtnh-workflows/scripts/summarize_horizonqa_result
+          .gtnh-workflows/scripts/summarize_horizonqa_result
+
+      - name: Test no errors reported during server run
+        id: server_errors
+        if: ${{ !inputs.client-only }}
+        run: |
+          chmod +x .gtnh-workflows/scripts/test_no_error_reports
+          .gtnh-workflows/scripts/test_no_error_reports
+
+      - name: Attach server logs
+        if: ${{ always() && !inputs.client-only && steps.run_server.conclusion != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: ${{ github.repository_id }}-server-logs-gtnh-${{ inputs.gtnh-version }}
+          path: |
+            server.log
+            run/crash-reports/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Test Horizon-QA result
+        if: ${{ always() && !inputs.client-only && inputs.horizonqa && steps.run_server.conclusion != 'skipped' && steps.server_errors.conclusion == 'success' }}
+        shell: bash
+        run: |
+          chmod +x .gtnh-workflows/scripts/test_horizonqa_result
+          .gtnh-workflows/scripts/test_horizonqa_result
+
+      - name: Test no prerelease dependencies used
+        run: '! grep -P -- "-pre(?!shadow)" dependencies.gradle*'
+
+      - name: Make sure asset files are not overoptimized
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          echo 'Checking for grayscale asset files which are not supported by the Java 8 image loader'
+          fail=0
+          set -o pipefail
+          while IFS= read -r -d $'\n' file; do
+            if file --brief -- "${file}" | grep -q grayscale; then
+              printf "found grayscale image '%s'\n" "${file}"
+              fail=1
+            fi
+          done < <(gh pr diff --name-only "${{ github.event.pull_request.number }}" | grep 'src/main/resources/.*\.png$' || true)
+          exit "${fail}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attach compilation artifacts
+        if: ${{ !github.event.repository.private }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-build-libs-gtnh-${{ inputs.gtnh-version }}
+          path: build/libs/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Find individual compilation artifacts
+        id: find-artifacts
+        shell: bash
+        run: |
+          mapfile -t files < <(find build/libs -maxdepth 1 -type f -name '*.jar' | sort)
+          for i in {0..9}; do
+            [[ -n "${files[${i}]:-}" ]] && echo "file_${i}=${files[${i}]}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Upload individual compilation artifact 1
+        if: ${{ steps.find-artifacts.outputs.file_0 != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.repository_id }}-gtnh-${{ inputs.gtnh-version }}-jar-1
+          path: ${{ steps.find-artifacts.outputs.file_0 }}
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          archive: false
