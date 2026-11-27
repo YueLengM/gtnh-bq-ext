@@ -1,0 +1,175 @@
+# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
+# For more information see: https://help.github.com/actions/language-and-framework-guides/building-and-testing-java-with-gradle
+
+name: Release tagged build
+
+on:
+  workflow_call:
+    inputs:
+      gtnh-version:
+        description: 'GTNH manifest version for this build'
+        required: true
+        type: string
+      workspace:
+        description: 'setupCIWorkspace/setupDecompWorkspace'
+        required: false
+        default: "setupCIWorkspace"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-gtnh${{ inputs.gtnh-version }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    env:
+      VERSION: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ github.ref_name }}
+      SNAPSHOT: ${{ endsWith(github.ref_name, '-snapshot') || contains(github.event.head_commit.message, '[snapshot]') }}
+      GTNH_VERSION: ${{ inputs.gtnh-version }}
+    steps:
+      - name: Checkout mod repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 32
+          submodules: recursive
+
+      - name: Determine JDK versions
+        id: list-jdk-versions
+        shell: bash
+        run: |
+          (
+            echo 'java-versions<<EOF'
+            echo 8
+            echo 17
+            echo 21
+            if [[ -f gradle/gradle-daemon-jvm.properties ]]; then
+              yq -pprops -oprops '.toolchainVersion' gradle/gradle-daemon-jvm.properties
+            fi
+            echo EOF
+          ) | tee -a "${GITHUB_OUTPUT}"
+
+      - name: Set up JDK versions
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ steps.list-jdk-versions.outputs.java-versions }}
+          distribution: 'zulu'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          build-scan-publish: true
+          build-scan-terms-of-use-url: "https://gradle.com/terms-of-service"
+          build-scan-terms-of-use-agree: "yes"
+          validate-wrappers: true
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Setup the workspace
+        run: ./gradlew --build-cache --info --stacktrace "-Pelytra.manifest.version=${GTNH_VERSION}" ${{ inputs.workspace }}
+
+      - name: Build the mod
+        run: ./gradlew --build-cache --info --stacktrace "-Pelytra.manifest.version=${GTNH_VERSION}" assemble
+
+      - name: Prepare versioned release artifacts
+        shell: bash
+        run: |
+          mapfile -t files < <(find build/libs -maxdepth 1 -type f -name '*.jar' | sort)
+          if (( ${#files[@]} == 0 )); then
+            echo "No JARs were produced in build/libs"
+            exit 1
+          fi
+
+          artifact_dir=build/release-artifacts
+          mkdir -p "${artifact_dir}"
+          for file in "${files[@]}"; do
+            filename="$(basename "${file}")"
+            versioned_filename="${filename%.jar}-gtnh${GTNH_VERSION}.jar"
+            cp "${file}" "${artifact_dir}/${versioned_filename}"
+          done
+          ls -lah "${artifact_dir}"
+
+      - name: Check whether this run already created the release
+        id: release-state
+        shell: bash
+        run: |
+          marker_name="gtnh-release-initialized-${GITHUB_RUN_ID}"
+          artifact_names=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" --jq '.artifacts[].name')
+          if grep -Fxq "${marker_name}" <<< "${artifact_names}"; then
+            echo "initialized=true" >> "${GITHUB_OUTPUT}"
+          elif [[ "${GITHUB_RUN_ATTEMPT}" -gt 1 ]] && gh release view "${RELEASE_VERSION}" > /dev/null; then
+            # Preserve existing assets on reruns even if the marker expired or was never saved.
+            echo "initialized=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "initialized=false" >> "${GITHUB_OUTPUT}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old release if it already exists
+        if: ${{ steps.release-state.outputs.initialized != 'true' }}
+        run: |
+          if gh release view "$RELEASE_VERSION" > /dev/null; then
+            LATEST_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name) || exit 1
+            if [[ "$LATEST_TAG" != "$RELEASE_VERSION" ]]; then
+              echo "LATEST_FLAG=--latest=false" >> "$GITHUB_ENV"
+            fi
+            gh release delete --yes "$RELEASE_VERSION" || true
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Continue on error in the following steps to make sure releases still get made even if one of the methods fails
+
+      - name: Release under current tag
+        id: create-release
+        if: ${{ steps.release-state.outputs.initialized != 'true' }}
+        run: |
+          PRERELEASE_FLAG=""
+          # DreamAssemblerXXL unfortunately breaks if prereleases are tagged as such on GitHub, so we only check for
+          # $SNAPSHOT here.
+          if [[ "$SNAPSHOT" == "true" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          CHANGELOG_OVERRIDE=".changelogs/${RELEASE_VERSION}.md"
+          if [[ -f "$CHANGELOG_OVERRIDE" ]]; then
+            echo "Using changelog override: $CHANGELOG_OVERRIDE"
+            export "CHANGELOG_FILE=$CHANGELOG_OVERRIDE"
+            echo "CHANGELOG_FILE=${CHANGELOG_FILE}" >> $GITHUB_ENV
+          else
+            echo "Generating changelog notes..."
+            export "CHANGELOG_FILE=$(mktemp --suffix=.md)"
+            echo "CHANGELOG_FILE=${CHANGELOG_FILE}" >> $GITHUB_ENV
+            gh api --method POST -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${RELEASE_VERSION}" \
+              --jq ".body" > "${CHANGELOG_FILE}"
+          fi
+          cat "${CHANGELOG_FILE}"
+          gh release create "${RELEASE_VERSION}" -F "${CHANGELOG_FILE}" ${PRERELEASE_FLAG} ${LATEST_FLAG} ./build/release-artifacts/*.jar
+        shell: bash
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add this GTNH version to the existing release
+        if: ${{ steps.release-state.outputs.initialized == 'true' }}
+        run: gh release upload "${RELEASE_VERSION}" ./build/release-artifacts/*.jar --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare release initialization marker
+        if: ${{ steps.release-state.outputs.initialized != 'true' && steps.create-release.outcome == 'success' }}
+        shell: bash
+        run: printf '%s\n' "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/gtnh-release-initialized"
+
+      - name: Save release initialization marker
+        if: ${{ steps.release-state.outputs.initialized != 'true' && steps.create-release.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: gtnh-release-initialized-${{ github.run_id }}
+          path: ${{ runner.temp }}/gtnh-release-initialized
+          if-no-files-found: error
+          retention-days: 1
