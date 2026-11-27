@@ -1,4 +1,3 @@
-
 name: Release tagged build
 
 on:
@@ -6,9 +5,47 @@ on:
     tags: [ '*' ]
 
 permissions:
+  actions: read
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  release-tags:
-    uses: GTNewHorizons/GTNH-Actions-Workflows/.github/workflows/release-tags.yml@master
+  read-versions:
+    name: Read GTNH release versions
+    runs-on: ubuntu-26.04
+    outputs:
+      versions: ${{ steps.read.outputs.versions }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Read GTNH test versions
+        id: read
+        shell: bash
+        run: |
+          versions=$(jq -ce '
+            if type == "array"
+              and length > 0
+              and all(.[]; type == "string" and test("^[^[:space:]]+$"))
+              and (length == (unique | length))
+            then .
+            else error("Expected a non-empty array of unique GTNH version strings")
+            end
+          ' gtnh-test-versions.json)
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  build-variants:
+    name: GTNH ${{ matrix.gtnh }}
+    needs: read-versions
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        gtnh: ${{ fromJSON(needs.read-versions.outputs.versions) }}
+    uses: ./.github/workflows/gtnh-release-tags.yml
+    with:
+      gtnh-version: ${{ matrix.gtnh }}
     secrets: inherit

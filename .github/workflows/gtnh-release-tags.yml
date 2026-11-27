@@ -5,16 +5,11 @@ name: Release tagged build
 
 on:
   workflow_call:
-    secrets:
-      MAVEN_USER:
-        required: false
-      MAVEN_PASSWORD:
-        required: false
-      CURSEFORGE_TOKEN:
-        required: false
-      MODRINTH_TOKEN:
-        required: false
     inputs:
+      gtnh-version:
+        description: 'GTNH manifest version for this build'
+        required: true
+        type: string
       workspace:
         description: 'setupCIWorkspace/setupDecompWorkspace'
         required: false
@@ -22,7 +17,7 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-gtnh${{ inputs.gtnh-version }}
   cancel-in-progress: true
 
 jobs:
@@ -32,8 +27,7 @@ jobs:
       VERSION: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ github.ref_name }}
       SNAPSHOT: ${{ endsWith(github.ref_name, '-snapshot') || contains(github.event.head_commit.message, '[snapshot]') }}
-      PRERELEASE: ${{ endsWith(github.ref_name, '-pre') }}
-      MAVEN_PUBLISHING_URL: ${{ vars.MAVEN_PUBLISHING_URL || 'https://nexus.gtnewhorizons.com/repository/releases/' }}
+      GTNH_VERSION: ${{ inputs.gtnh-version }}
     steps:
       - name: Checkout mod repo
         uses: actions/checkout@v5
@@ -74,12 +68,48 @@ jobs:
         run: chmod +x gradlew
 
       - name: Setup the workspace
-        run: ./gradlew --build-cache --info --stacktrace -PmavenPublishUrl='${{ env.MAVEN_PUBLISHING_URL }}' ${{ inputs.workspace }}
+        run: ./gradlew --build-cache --info --stacktrace "-Pelytra.manifest.version=${GTNH_VERSION}" ${{ inputs.workspace }}
 
       - name: Build the mod
-        run: ./gradlew --build-cache --info --stacktrace -PmavenPublishUrl='${{ env.MAVEN_PUBLISHING_URL }}' assemble
+        run: ./gradlew --build-cache --info --stacktrace "-Pelytra.manifest.version=${GTNH_VERSION}" assemble
+
+      - name: Prepare versioned release artifacts
+        shell: bash
+        run: |
+          mapfile -t files < <(find build/libs -maxdepth 1 -type f -name '*.jar' | sort)
+          if (( ${#files[@]} == 0 )); then
+            echo "No JARs were produced in build/libs"
+            exit 1
+          fi
+
+          artifact_dir=build/release-artifacts
+          mkdir -p "${artifact_dir}"
+          for file in "${files[@]}"; do
+            filename="$(basename "${file}")"
+            versioned_filename="${filename%.jar}-gtnh${GTNH_VERSION}.jar"
+            cp "${file}" "${artifact_dir}/${versioned_filename}"
+          done
+          ls -lah "${artifact_dir}"
+
+      - name: Check whether this run already created the release
+        id: release-state
+        shell: bash
+        run: |
+          marker_name="gtnh-release-initialized-${GITHUB_RUN_ID}"
+          artifact_names=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" --jq '.artifacts[].name')
+          if grep -Fxq "${marker_name}" <<< "${artifact_names}"; then
+            echo "initialized=true" >> "${GITHUB_OUTPUT}"
+          elif [[ "${GITHUB_RUN_ATTEMPT}" -gt 1 ]] && gh release view "${RELEASE_VERSION}" > /dev/null; then
+            # Preserve existing assets on reruns even if the marker expired or was never saved.
+            echo "initialized=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "initialized=false" >> "${GITHUB_OUTPUT}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Delete old release if it already exists
+        if: ${{ steps.release-state.outputs.initialized != 'true' }}
         run: |
           if gh release view "$RELEASE_VERSION" > /dev/null; then
             LATEST_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name) || exit 1
@@ -94,6 +124,8 @@ jobs:
       # Continue on error in the following steps to make sure releases still get made even if one of the methods fails
 
       - name: Release under current tag
+        id: create-release
+        if: ${{ steps.release-state.outputs.initialized != 'true' }}
         run: |
           PRERELEASE_FLAG=""
           # DreamAssemblerXXL unfortunately breaks if prereleases are tagged as such on GitHub, so we only check for
@@ -116,30 +148,28 @@ jobs:
               --jq ".body" > "${CHANGELOG_FILE}"
           fi
           cat "${CHANGELOG_FILE}"
-          gh release create "${RELEASE_VERSION}" -F "${CHANGELOG_FILE}" ${PRERELEASE_FLAG} ${LATEST_FLAG} ./build/libs/*.jar
+          gh release create "${RELEASE_VERSION}" -F "${CHANGELOG_FILE}" ${PRERELEASE_FLAG} ${LATEST_FLAG} ./build/release-artifacts/*.jar
         shell: bash
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to Maven
-        run: ./gradlew --build-cache --info --stacktrace -PmavenPublishUrl='${{ env.MAVEN_PUBLISHING_URL }}' assemble publish -x test
-        continue-on-error: true
+      - name: Add this GTNH version to the existing release
+        if: ${{ steps.release-state.outputs.initialized == 'true' }}
+        run: gh release upload "${RELEASE_VERSION}" ./build/release-artifacts/*.jar --clobber
         env:
-          MAVEN_USER: ${{ secrets.MAVEN_USER }}
-          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
-        if: ${{ env.MAVEN_USER != '' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to Modrinth
-        run: ./gradlew --build-cache --info --stacktrace -PmavenPublishUrl='${{ env.MAVEN_PUBLISHING_URL }}' assemble publish -x test
-        continue-on-error: true
-        env:
-          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-        if: ${{ env.SNAPSHOT != 'true' && env.PRERELEASE != 'true' }}
+      - name: Prepare release initialization marker
+        if: ${{ steps.release-state.outputs.initialized != 'true' && steps.create-release.outcome == 'success' }}
+        shell: bash
+        run: printf '%s\n' "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/gtnh-release-initialized"
 
-      - name: Publish to Curseforge
-        run: ./gradlew --build-cache --info --stacktrace -PmavenPublishUrl='${{ env.MAVEN_PUBLISHING_URL }}' assemble publish -x test
-        continue-on-error: true
-        env:
-          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
-        if: ${{ env.SNAPSHOT != 'true' && env.PRERELEASE != 'true' }}
+      - name: Save release initialization marker
+        if: ${{ steps.release-state.outputs.initialized != 'true' && steps.create-release.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: gtnh-release-initialized-${{ github.run_id }}
+          path: ${{ runner.temp }}/gtnh-release-initialized
+          if-no-files-found: error
+          retention-days: 1
